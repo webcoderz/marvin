@@ -29,6 +29,9 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
+from sqlalchemy.engine.url import make_url, URL
+from sqlalchemy import create_engine, inspect
+
 from sqlalchemy.pool import StaticPool
 
 from marvin.settings import settings
@@ -39,9 +42,8 @@ message_adapter: TypeAdapter[Message] = TypeAdapter(Message)
 usage_adapter: TypeAdapter[Usage] = TypeAdapter(Usage)
 
 # Module-level cache for engines
-_engine_cache: dict[str, Engine] = {}
+_engine_cache: dict[str, create_engine] = {}
 _async_engine_cache: dict[str, AsyncEngine] = {}
-
 
 def serialize_message(message: Message) -> str:
     """
@@ -57,50 +59,72 @@ def serialize_message(message: Message) -> str:
     return message_adapter.dump_python(message, mode="json")
 
 
-def get_engine() -> Engine:
-    """Get the SQLAlchemy engine for sync operations.
-
-    For in-memory databases (:memory:), this uses StaticPool to maintain
-    a single connection that can be shared with the async engine.
-    """
+def get_engine() -> create_engine:
+    """Get the SQLAlchemy engine for sync operations."""
     if "default" not in _engine_cache:
-        is_memory_db = settings.database_url == ":memory:"
-        engine = create_engine(
-            f"sqlite:///{settings.database_url}",
-            echo=False,
-            poolclass=StaticPool if is_memory_db else None,
-            connect_args={"check_same_thread": False},
-        )
+        url = make_url(settings.database_url)
+
+        if url.drivername.startswith("sqlite"):
+            # Check if it's in-memory
+            is_memory_db = (url.database in (None, '', ':memory:'))
+            engine = create_engine(
+                str(url),
+                echo=False,
+                # For in-memory sqlite, we can use StaticPool so that the async and sync engines share state
+                poolclass=StaticPool if is_memory_db else None,
+                connect_args={"check_same_thread": False} if is_memory_db else {},
+            )
+        elif url.drivername.startswith("postgresql"):
+            # Postgres engine (sync via psycopg2 or psycopg)
+            # Typically you'd have just "postgresql://", which defaults to psycopg2
+            # or "postgresql+psycopg://", if you explicitly want psycopg.
+            engine = create_engine(
+                str(url.set(drivername="postgresql")),  # ensure the sync driver name
+                echo=False,
+            )
+        else:
+            # Fallback / other databases
+            engine = create_engine(str(url), echo=False)
+
         _engine_cache["default"] = engine
 
     return _engine_cache["default"]
 
 
-def get_async_engine():
-    """Get the SQLAlchemy engine for async operations.
-
-    For in-memory databases (:memory:), this reuses the sync engine's connection
-    to ensure both engines share the same database state.
-    """
+def get_async_engine() -> AsyncEngine:
+    """Get the SQLAlchemy engine for async operations."""
     if "default" not in _async_engine_cache:
-        is_memory_db = settings.database_url == ":memory:"
+        url = make_url(settings.database_url)
 
-        if is_memory_db:
-            # For in-memory databases, share connection with sync engine
-            sync_engine = get_engine()
+        if url.drivername.startswith("sqlite"):
+            # Check if it's in-memory
+            is_memory_db = (url.database in (None, '', ':memory:'))
+            if is_memory_db:
+                # For in-memory databases, share the sync engine’s connection
+                sync_engine = get_engine()
+                engine = create_async_engine(
+                    "sqlite+aiosqlite://",
+                    echo=False,
+                    poolclass=StaticPool,
+                    creator=lambda: sync_engine.raw_connection(),
+                )
+            else:
+                # file-based sqlite
+                engine = create_async_engine(
+                    str(url.set(drivername="sqlite+aiosqlite")),
+                    echo=False,
+                )
+
+        elif url.drivername.startswith("postgresql"):
+            # For async PostgreSQL, the typical driver is "postgresql+asyncpg"
             engine = create_async_engine(
-                f"sqlite+aiosqlite:///{settings.database_url}",
+                str(url.set(drivername="postgresql+asyncpg")),
                 echo=False,
-                poolclass=StaticPool,
-                connect_args={"check_same_thread": False},
-                creator=lambda: sync_engine.raw_connection(),
             )
         else:
-            engine = create_async_engine(
-                f"sqlite+aiosqlite:///{settings.database_url}",
-                echo=False,
-                connect_args={"check_same_thread": False},
-            )
+            # Fallback / other databases
+            engine = create_async_engine(str(url), echo=False)
+
         _async_engine_cache["default"] = engine
 
     return _async_engine_cache["default"]
@@ -260,17 +284,16 @@ class DBLLMCall(Base):
 
 
 def ensure_tables_exist():
-    """Initialize database tables if they don't exist yet.
-
-    For in-memory databases, tables are always created since each connection
-    starts with a fresh database. For file-based databases, tables are only
-    created if they don't exist.
-    """
     engine = get_engine()
-    is_memory_db = settings.database_url == ":memory:"
-
-    if is_memory_db or not inspect(engine).get_table_names():
-        Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        # Check if it’s in-memory or if the database is empty
+        if engine.url.database in (None, "", ":memory:") or not inspect(engine).get_table_names():
+            Base.metadata.create_all(engine)
+    else:
+        # For Postgres or other DBs, only create if no tables exist
+        # or always create, depending on your preference
+        if not inspect(engine).get_table_names():
+            Base.metadata.create_all(engine)
 
 
 @contextmanager
