@@ -21,6 +21,7 @@ from sqlalchemy import (
     create_engine,
     inspect,
 )
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -29,9 +30,6 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
-from sqlalchemy.engine.url import make_url, URL
-from sqlalchemy import create_engine, inspect
-
 from sqlalchemy.pool import StaticPool
 
 from marvin.settings import settings
@@ -44,6 +42,7 @@ usage_adapter: TypeAdapter[Usage] = TypeAdapter(Usage)
 # Module-level cache for engines
 _engine_cache: dict[str, create_engine] = {}
 _async_engine_cache: dict[str, AsyncEngine] = {}
+
 
 def serialize_message(message: Message) -> str:
     """
@@ -66,7 +65,7 @@ def get_engine() -> create_engine:
 
         if url.drivername.startswith("sqlite"):
             # Check if it's in-memory
-            is_memory_db = (url.database in (None, '', ':memory:'))
+            is_memory_db = url.database in (None, "", ":memory:")
             engine = create_engine(
                 str(url),
                 echo=False,
@@ -98,7 +97,7 @@ def get_async_engine() -> AsyncEngine:
 
         if url.drivername.startswith("sqlite"):
             # Check if it's in-memory
-            is_memory_db = (url.database in (None, '', ':memory:'))
+            is_memory_db = url.database in (None, "", ":memory:")
             if is_memory_db:
                 # For in-memory databases, share the sync engine’s connection
                 sync_engine = get_engine()
@@ -287,7 +286,10 @@ def ensure_tables_exist():
     engine = get_engine()
     if engine.dialect.name == "sqlite":
         # Check if it’s in-memory or if the database is empty
-        if engine.url.database in (None, "", ":memory:") or not inspect(engine).get_table_names():
+        if (
+            engine.url.database in (None, "", ":memory:")
+            or not inspect(engine).get_table_names()
+        ):
             Base.metadata.create_all(engine)
     else:
         # For Postgres or other DBs, only create if no tables exist
