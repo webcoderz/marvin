@@ -20,12 +20,13 @@ class Defaults:
     agent: Agent
     model: KnownModelName | Model
     memory_provider: str
-
+    database_url: str
 
 defaults = Defaults(
     agent=Agent(name="Marvin"),
     model=marvin.settings.agent_model,
     memory_provider=marvin.settings.memory_provider,
+    database_url=":memory:",
 )
 
 
