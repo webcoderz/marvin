@@ -62,14 +62,11 @@ class Settings(BaseSettings):
             return v
 
         # Convert to Path for validation and ensure parent directory exists
-        try:
+        else:
             url = make_url(v)
             if url.drivername.startswith("postgresql"):
                 return v
 
-        except Exception:
-
-            pass
 
         # 4. Otherwise, treat as local filesystem path
         path = Path(v).expanduser().resolve()
