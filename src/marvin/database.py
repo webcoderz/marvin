@@ -283,14 +283,19 @@ class DBLLMCall(Base):
 
 
 def ensure_tables_exist():
+    """Initialize database tables if they don't exist yet.
+
+    For in-memory databases, tables are always created since each connection
+    starts with a fresh database. For file-based databases, tables are only
+    created if they don't exist.
+    For Postgres or other DBs, only create if no tables exist.
+    """
     engine = get_engine()
-    if engine.dialect.name == "sqlite":
-        # Check if it’s in-memory or if the database is empty
-        if (
-            engine.url.database in (None, "", ":memory:")
-            or not inspect(engine).get_table_names()
-        ):
-            Base.metadata.create_all(engine)
+    is_memory_db = settings.database_url == ":memory:"
+
+    if is_memory_db or not inspect(engine).get_table_names():
+        Base.metadata.create_all(engine)
+
     else:
         # For Postgres or other DBs, only create if no tables exist
         # or always create, depending on your preference
