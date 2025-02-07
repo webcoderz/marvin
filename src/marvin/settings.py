@@ -7,7 +7,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_ai.models import KnownModelName
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
-
+from sqlalchemy.engine.url import make_url, URL
 
 class Settings(BaseSettings):
     """Settings for Marvin.
@@ -62,6 +62,16 @@ class Settings(BaseSettings):
             return v
 
         # Convert to Path for validation and ensure parent directory exists
+        try:
+            url = make_url(v)
+            if url.drivername.startswith("postgresql"):
+                return v
+
+        except Exception:
+
+            pass
+
+        # 4. Otherwise, treat as local filesystem path
         path = Path(v).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
 
